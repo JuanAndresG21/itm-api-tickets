@@ -1,11 +1,63 @@
 using Itm.Booking.Api.Constants;
 using Itm.Booking.Api.Dtos;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.IdentityModel.Tokens;
+using Microsoft.OpenApi.Models;
 using System.Net.Http.Json;
+using System.Text;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen();
+
+// -----------------------------------------------------------
+// SWAGGER CON SOPORTE JWT
+// -----------------------------------------------------------
+builder.Services.AddSwaggerGen(c =>
+{
+    c.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
+    {
+        Name         = "Authorization",
+        Type         = SecuritySchemeType.Http,
+        Scheme       = "bearer",
+        BearerFormat = "JWT",
+        In           = ParameterLocation.Header,
+        Description  = "Ingresa tu token JWT. Ejemplo: eyJhbGci..."
+    });
+    c.AddSecurityRequirement(new OpenApiSecurityRequirement
+    {
+        {
+            new OpenApiSecurityScheme
+            {
+                Reference = new OpenApiReference { Type = ReferenceType.SecurityScheme, Id = "Bearer" }
+            },
+            Array.Empty<string>()
+        }
+    });
+});
+
+// -----------------------------------------------------------
+// AUTENTICACIÓN JWT
+// -----------------------------------------------------------
+var jwtKey    = builder.Configuration["Jwt:Key"]    ?? "itm-secret-key-super-segura-2026!";
+var jwtIssuer = builder.Configuration["Jwt:Issuer"] ?? "Itm.Booking.Api";
+
+builder.Services
+    .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer(options =>
+    {
+        options.TokenValidationParameters = new TokenValidationParameters
+        {
+            ValidateIssuer           = true,
+            ValidateAudience         = false,
+            ValidateLifetime         = true,
+            ValidateIssuerSigningKey = true,
+            ValidIssuer              = jwtIssuer,
+            IssuerSigningKey         = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtKey))
+        };
+    });
+
+builder.Services.AddAuthorization();
 
 // -----------------------------------------------------------
 // REGISTRO DE CLIENTES HTTP CON RESILIENCIA (Rúbrica Nivel 5)
@@ -32,6 +84,16 @@ builder.Services
     })
     .AddStandardResilienceHandler();
 
+// Cliente interno para que /api/bookings/secure delegue a /api/bookings
+builder.Services
+    .AddHttpClient("BookingInternal", client =>
+    {
+        client.BaseAddress = new Uri(
+            Environment.GetEnvironmentVariable("BOOKING_API_URL")
+            ?? config["ServiceUrls:BookingApi"]
+            ?? "http://localhost:5148");
+    });
+
 var app = builder.Build();
 
 if (app.Environment.IsDevelopment())
@@ -39,6 +101,54 @@ if (app.Environment.IsDevelopment())
     app.UseSwagger();
     app.UseSwaggerUI();
 }
+
+app.UseAuthentication();
+app.UseAuthorization();
+
+// -----------------------------------------------------------
+// POST /api/auth/token — Genera un JWT de prueba
+// -----------------------------------------------------------
+// En producción esto lo haría un servicio de identidad real (Keycloak, Auth0, etc.).
+// Aquí lo exponemos solo para hacer pruebas sin herramienta externa.
+app.MapPost("/api/auth/token", (LoginRequestDto login) =>
+{
+    // Credenciales de prueba fijas (solo para demo)
+    if (login.Username != "itm" || login.Password != "2026")
+        return Results.Unauthorized();
+
+    var key     = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtKey));
+    var creds   = new Microsoft.IdentityModel.Tokens.SigningCredentials(key, SecurityAlgorithms.HmacSha256);
+    var token   = new System.IdentityModel.Tokens.Jwt.JwtSecurityToken(
+        issuer:             jwtIssuer,
+        claims:             null,
+        expires:            DateTime.UtcNow.AddHours(1),
+        signingCredentials: creds);
+
+    var jwt = new System.IdentityModel.Tokens.Jwt.JwtSecurityTokenHandler().WriteToken(token);
+    return Results.Ok(new { Token = jwt, ExpiresIn = "1h" });
+})
+.WithName("GetToken")
+.WithSummary("Generar Token JWT")
+.WithDescription("Credenciales de prueba: user=itm | pass=2026")
+.AllowAnonymous();
+
+// -----------------------------------------------------------
+// POST /api/bookings/secure — Igual que /api/bookings pero requiere JWT
+// -----------------------------------------------------------
+app.MapPost("/api/bookings/secure", async (BookingRequestDto request, IHttpClientFactory factory) =>
+{
+    // Reutiliza exactamente la misma lógica del endpoint público
+    // delegando la petición internamente al propio servicio.
+    var bookingClient = factory.CreateClient("BookingInternal");
+    var response = await bookingClient.PostAsJsonAsync("/api/bookings", request);
+    var content  = await response.Content.ReadAsStringAsync();
+
+    return Results.Content(content,
+        contentType: "application/json",
+        statusCode:  (int)response.StatusCode);
+})
+.WithName("CreateSecureBooking")
+.RequireAuthorization();
 
 // -----------------------------------------------------------
 // POST /api/bookings — Orquestador principal (Patrón SAGA)

@@ -21,3 +21,6 @@ public record BookingInvoiceDto(
     decimal Discount,
     decimal Total,
     string  Message);
+
+/// <summary>Credenciales para obtener un JWT de prueba.</summary>
+public record LoginRequestDto(string Username, string Password);
