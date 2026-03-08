@@ -1,0 +1,98 @@
+Módulo: Programación Distribuida (190304014-1)
+Modalidad: Trabajo en casa (Individual o Parejas)
+ 
+1. Escenario de Negocio (El Reto)
+Mensaje del Docente
+"Equipo, el ITM va a organizar el concierto de fin de semestre. Han decidido crear su propia plataforma de venta de entradas: ITM-Tickets. Si lo hacemos en un monolito y 5,000 estudiantes entran al mismo tiempo a comprar, el servidor va a colapsar y tendremos sobreventa (personas comprando la misma silla). Su misión es diseñar un ecosistema de microservicios resiliente que maneje la disponibilidad de entradas, aplique códigos de descuento y garantice que, si el pago de un estudiante falla, su boleta vuelva a quedar libre para otro compañero."
+ 
+2. Arquitectura del Sistema (Lo que deben construir)
+Deberán crear una Solución en Visual Studio llamada Itm.Tickets.System con TRES microservicios en .NET 8 (usando Minimal APIs):
+1.	Itm.Event.Api (El Gestor de Aforo):
+o	Controla cuántas sillas quedan para el concierto.
+o	Sabe restar sillas (Reservar) y sumar sillas (Liberar/Compensar).
+2.	Itm.Discount.Api (El Gestor de Promociones):
+o	Valida si un código de descuento existe (ej: "ITM2026") y qué porcentaje descuenta.
+3.	Itm.Booking.Api (El Orquestador / BFF):
+o	Es la cara al cliente.
+o	Recibe la orden de compra, consulta a los otros dos servicios en paralelo, calcula el total, intenta cobrar y ejecuta el Patrón SAGA si el cobro falla.
+ 
+3. Requerimientos Técnicos Paso a Paso
+FASE 1: Los Cimientos y Contratos (Aplica Clase 1 y 2)
+Para Event.Api:
+•	Base de datos simulada: Una lista con un evento: Id = 1, Nombre = "Concierto ITM", PrecioBase = 50000, SillasDisponibles = 100.
+•	Endpoints requeridos:
+1.	GET /api/events/{id}: Retorna la info del evento.
+2.	POST /api/events/reserve: Recibe un DTO con (int EventId, int Quantity). Resta las sillas. Si no hay suficientes, retorna HTTP 400 (BadRequest).
+3.	POST /api/events/release: Recibe el mismo DTO y SUMA las sillas de vuelta (El "Ctrl+Z").
+Para Discount.Api:
+•	Base de datos simulada: Una lista con un descuento: Codigo = "ITM50", Porcentaje = 0.5m (50%).
+•	Endpoint requerido:
+1.	GET /api/discounts/{code}: Retorna el porcentaje. Si el código no existe, retorna 404.
+ 
+FASE 2: La Orquestación Paralela (Aplica Clase 2)
+Para Booking.Api (El Orquestador):
+•	Deben configurar el HttpClientFactory para conectarse a Event.Api y Discount.Api.
+•	¡Obligatorio usar Resiliencia! Deben incluir .AddStandardResilienceHandler() en ambos clientes.
+ 
+FASE 3: El Patrón SAGA y la Transacción (Aplica Clase 3 y 4)
+El corazón del taller. Deben crear el endpoint POST /api/bookings en el Booking.Api.
+El Flujo Exacto que debe tener el código:
+1.	Recibir Petición: El cliente envía: EventId = 1, Tickets = 2, DiscountCode = "ITM50".
+2.	Validación Paralela: Usar Task.WhenAll para consultar el Evento y el Descuento al mismo tiempo.
+3.	Matemáticas: Calcular el total a pagar (PrecioBase * Tickets) - Descuento.
+4.	Reserva (Paso 1 de la SAGA): Llamar a POST /api/events/reserve.
+5.	Simulación de Pago: * Generar un número aleatorio del 1 al 10. 
+o	Si es mayor a 5, el pago es exitoso. Retornar JSON con la factura.
+o	Si es menor o igual a 5, ¡Falla el pago! Lanzar una excepción.
+6.	Compensación (Paso 2 de la SAGA): En el bloque catch, deben llamar a POST /api/events/release para devolver las sillas. Retornar un mensaje amigable al usuario diciendo "El pago falló, las sillas fueron liberadas".
+ 
+Código Base de Regalo (El Esqueleto del Orquestador)
+Para que no se bloqueen con la sintaxis, aquí tienen el esqueleto de la lógica SAGA en Booking.Api. Su trabajo es completar las URLs, los DTOs y hacer que funcione.
+C#
+app.MapPost("/api/bookings", async (BookingRequest request, IHttpClientFactory factory) =>
+{
+    var eventClient = factory.CreateClient("EventClient");
+    var discountClient = factory.CreateClient("DiscountClient");
+
+    // 1. LECTURA EN PARALELO (Clase 2)var eventTask = eventClient.GetFromJsonAsync<EventDto>($"/api/events/{request.EventId}");
+    var discountTask = discountClient.GetFromJsonAsync<DiscountDto>($"/api/discounts/{request.DiscountCode}");
+
+    // ¿Qué pasa si el código de descuento no existe y da 404? Deben manejarlo.// (Pista: Pueden usar try/catch aquí o validar la respuesta).// 2. ACCIÓN: RESERVAR SILLAS (Inicio de SAGA)var reserveResponse = await eventClient.PostAsJsonAsync("/api/events/reserve", 
+        new { EventId = request.EventId, Quantity = request.Tickets });
+
+    if (!reserveResponse.IsSuccessStatusCode)
+        return Results.BadRequest("No hay sillas suficientes o el evento no existe.");
+
+    try    {        // 3. SIMULACIÓN DE PAGO (Punto Crítico)bool paymentSuccess = new Random().Next(1, 10) > 5;
+        if (!paymentSuccess) throw new Exception("Fondos insuficientes en la tarjeta de crédito.");
+
+        return Results.Ok(new { Status = "Éxito", Message = "¡Disfruta el concierto ITM!" });
+    }
+    catch (Exception ex)
+    {
+        // 4. COMPENSACIÓN (Clase 4 - El Ctrl+Z)
+        Console.WriteLine($"[SAGA] Error en pago: {ex.Message}. Liberando sillas...");
+        
+        await eventClient.PostAsJsonAsync("/api/events/release", 
+            new { EventId = request.EventId, Quantity = request.Tickets });
+
+        return Results.Problem("Tu pago fue rechazado. No te preocupes, no te cobramos y tus sillas fueron liberadas.");
+    }
+});
+
+Rúbrica de Evaluación (Nivel 5)
+Para obtener la nota máxima (5.0), el proyecto debe cumplir con los estándares de la industria:
+Criterio	Descripción (Lo que revisaré)
+1. Desacoplamiento (DTOs)	Ningún servicio comparte clases de C#. Cada API tiene su propia carpeta Dtos y se comunican enviando "Contratos" limpios. (Fabián y Juan José, ¡ojo con exponer entidades de BD!).
+2. Paralelismo Real	El Booking.Api usa Task.WhenAll para consultar el Evento y el Descuento. No se acepta que consulten uno, esperen, y luego consulten el otro.
+3. Resiliencia Configurada	En el Program.cs del Orquestador, las fábricas de HttpClient DEBEN tener el .AddStandardResilienceHandler() configurado.
+4. Patrón SAGA Funcional	Deben demostrar que si el "Pago" falla (por el Random), el Event.Api recupera su stock original. (Haré la prueba haciendo GET al inventario antes y después del fallo).
+ 
+Entregables
+1.	Código Fuente: Repositorio en GitHub (Público) con la Solución de Visual Studio.
+2.	Video / Demo (Max 3 minutos): Un video corto donde muestren las ventanas de consola corriendo, hagan la petición desde Swagger/Postman, muestren el fallo de pago y demuestren cómo el stock vuelve a subir.
+Recomendación Final del Docente:
+"Muchachos, lean los errores. Si les sale 'Connection Refused', revisen los puertos en launchSettings.json. Si les sale un 500, pongan un 'Breakpoint' en el try/catch. La arquitectura distribuida no es difícil, es de disciplina. ¡Confío en sus capacidades!"
+Fecha límite de entrega: 09/03/2026
+Formato de entrega: Enlace a GitHub en la plataforma del ITM y sustentación en clase.
+

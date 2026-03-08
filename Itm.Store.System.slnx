@@ -1,4 +1,10 @@
 <Solution>
+  <Folder Name="/Elementos de la solución/">
+    <File Path="global.json" />
+  </Folder>
+  <Project Path="Itm.Booking.Api/Itm.Booking.Api.csproj" Id="eebf6625-944c-4960-8f9b-c6055496be86" />
+  <Project Path="Itm.Discount.Api/Itm.Discount.Api.csproj" Id="04b563bf-0794-4a20-bebd-71fe110eb3e0" />
+  <Project Path="Itm.Event.Api/Itm.Event.Api.csproj" Id="136d0513-55f8-4c20-97ea-4fc5d9c51c0b" />
   <Project Path="Itm.Gateway.Api/Itm.Gateway.Api.csproj" Id="af049245-290b-4908-ba92-097ceb20c2cf" />
   <Project Path="Itm.Inventory.Api/Itm.Inventory.Api.csproj" />
   <Project Path="Itm.Order.Api/Itm.Order.Api.csproj" />

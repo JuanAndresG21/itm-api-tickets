@@ -1,6 +1,38 @@
 @Itm.Inventory.Api_HostAddress = http://localhost:5273
+@token = eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJpdG0taW52ZW50b3J5LWFwaSIsImF1ZCI6Iml0bS1nYXRld2F5IiwiZXhwIjoxOTAwMDAwMDAwfQ.NnrlBlIqdTkf7IVnqglmQQtUNB1gf2V8BfuMse-U8ls
 
-GET {{Itm.Inventory.Api_HostAddress}}/weatherforecast/
+### GET inventario por ID (requiere token)
+GET {{Itm.Inventory.Api_HostAddress}}/api/inventory/1
 Accept: application/json
+Authorization: Bearer {{token}}
+
+###
+
+### GET inventario - producto sin stock
+GET {{Itm.Inventory.Api_HostAddress}}/api/inventory/2
+Accept: application/json
+Authorization: Bearer {{token}}
+
+###
+
+### POST reducir stock
+POST {{Itm.Inventory.Api_HostAddress}}/api/inventory/reduce
+Content-Type: application/json
+
+{
+  "productId": 1,
+  "quantity": 5
+}
+
+###
+
+### POST liberar stock (compensación)
+POST {{Itm.Inventory.Api_HostAddress}}/api/inventory/release
+Content-Type: application/json
+
+{
+  "productId": 1,
+  "quantity": 5
+}
 
 ###

@@ -1,0 +1,6 @@
+@Itm.Booking.Api_HostAddress = http://localhost:5148
+
+GET {{Itm.Booking.Api_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

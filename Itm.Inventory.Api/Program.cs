@@ -1,3 +1,5 @@
+using System.IdentityModel.Tokens.Jwt;
+using System.Security.Claims;
 using System.Text;
 using Itm.Inventory.Api.Dtos;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
@@ -26,9 +28,27 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             ValidIssuer = jwtSettings["Issuer"],
             ValidateAudience = true,
             ValidAudience = jwtSettings["Audience"],
-            ValidateLifetime = true, // Valida que el token no haya expirado
-            ValidateIssuerSigningKey = true, // Valida la firma del token
-            IssuerSigningKey = new SymmetricSecurityKey(secretKey) // Clave secreta para validar la firma
+            ValidateLifetime = true,
+            ValidateIssuerSigningKey = true,
+            IssuerSigningKey = new SymmetricSecurityKey(secretKey)
+        };
+        // Log de errores JWT: muestra la razón exacta del 401 en la consola
+        options.Events = new JwtBearerEvents
+        {
+            OnAuthenticationFailed = ctx =>
+            {
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine($"[JWT ERROR] {ctx.Exception.GetType().Name}: {ctx.Exception.Message}");
+                Console.ResetColor();
+                return Task.CompletedTask;
+            },
+            OnTokenValidated = ctx =>
+            {
+                Console.ForegroundColor = ConsoleColor.Green;
+                Console.WriteLine($"[JWT OK] Token validado correctamente");
+                Console.ResetColor();
+                return Task.CompletedTask;
+            }
         };
     });
 
@@ -63,6 +83,32 @@ var inventoryDb = new List<InventoryDto>
 // MapGet: Define que responderemos a peticiones HTTP GET (Lectura).
 // "/api/inventory/{id}": La URL. {id} es una variable.
 // GET /api/inventory/1 -> id=1
+
+// POST /api/auth/token -> Genera un token JWT válido para acceder a los endpoints protegidos
+app.MapPost("/api/auth/token", (LoginDto login) =>
+{
+    if (login.Username != "admin" || login.Password != "admin123")
+        return Results.Unauthorized();
+
+    var tokenHandler = new JwtSecurityTokenHandler();
+    var tokenDescriptor = new SecurityTokenDescriptor
+    {
+        Subject = new ClaimsIdentity(
+        [
+            new Claim(ClaimTypes.Name, login.Username),
+            new Claim(ClaimTypes.Role, "Admin")
+        ]),
+        Expires = DateTime.UtcNow.AddHours(1),
+        Issuer = jwtSettings["Issuer"],
+        Audience = jwtSettings["Audience"],
+        SigningCredentials = new SigningCredentials(
+            new SymmetricSecurityKey(secretKey),
+            SecurityAlgorithms.HmacSha256Signature)
+    };
+
+    var token = tokenHandler.CreateToken(tokenDescriptor);
+    return Results.Ok(new { Token = tokenHandler.WriteToken(token) });
+});
 
 app.MapGet("/api/inventory/{id}", (int id) =>
 {
@@ -124,3 +170,5 @@ var index = inventoryDb.IndexOf(item);
 });
 
 app.Run();
+
+public record LoginDto(string Username, string Password);
