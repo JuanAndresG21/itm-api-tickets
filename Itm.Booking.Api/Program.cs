@@ -1,5 +1,9 @@
 using Itm.Booking.Api.Constants;
+using Itm.Booking.Api.Consumers;
 using Itm.Booking.Api.Dtos;
+using Itm.Booking.Api.Events;
+using Itm.Booking.Api.Hubs;
+using MassTransit;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
@@ -9,6 +13,7 @@ using System.Text;
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSignalR();
 
 // -----------------------------------------------------------
 // SWAGGER CON SOPORTE JWT
@@ -39,13 +44,34 @@ builder.Services.AddSwaggerGen(c =>
 // -----------------------------------------------------------
 // AUTENTICACIÓN JWT
 // -----------------------------------------------------------
-var jwtKey    = builder.Configuration["Jwt:Key"]    ?? "itm-secret-key-super-segura-2026!";
-var jwtIssuer = builder.Configuration["Jwt:Issuer"] ?? "Itm.Booking.Api";
+var jwtKey = builder.Configuration["Jwt:Key"]?.Trim();
+if (string.IsNullOrWhiteSpace(jwtKey) || jwtKey == "SECRET_REPLACED_BY_ENV")
+{
+    throw new InvalidOperationException("JWT key missing. Configure Jwt:Key via user secrets or environment variables.");
+}
+
+var jwtIssuer = builder.Configuration["Jwt:Issuer"]?.Trim() ?? "Itm.Booking.Api";
 
 builder.Services
     .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
     {
+        options.Events = new JwtBearerEvents
+        {
+            OnMessageReceived = context =>
+            {
+                var accessToken = context.Request.Query["access_token"];
+                var path = context.HttpContext.Request.Path;
+
+                if (!string.IsNullOrEmpty(accessToken) && path.StartsWithSegments("/hubs"))
+                {
+                    context.Token = accessToken;
+                }
+
+                return Task.CompletedTask;
+            }
+        };
+
         options.TokenValidationParameters = new TokenValidationParameters
         {
             ValidateIssuer           = true,
@@ -58,6 +84,23 @@ builder.Services
     });
 
 builder.Services.AddAuthorization();
+
+var rabbitHost = builder.Configuration["RabbitMq:Host"];
+if (string.IsNullOrWhiteSpace(rabbitHost) || rabbitHost == "RABBITMQ_CONNECTION")
+{
+    rabbitHost = "amqp://guest:guest@localhost:5672";
+}
+
+builder.Services.AddMassTransit(x =>
+{
+    x.AddConsumer<BookingConfirmedConsumer>();
+
+    x.UsingRabbitMq((context, cfg) =>
+    {
+        cfg.Host(new Uri(rabbitHost));
+        cfg.ConfigureEndpoints(context);
+    });
+});
 
 // -----------------------------------------------------------
 // REGISTRO DE CLIENTES HTTP CON RESILIENCIA (Rúbrica Nivel 5)
@@ -104,6 +147,8 @@ if (app.Environment.IsDevelopment())
 
 app.UseAuthentication();
 app.UseAuthorization();
+
+app.MapHub<TicketHub>("/hubs/tickets").RequireAuthorization();
 
 // -----------------------------------------------------------
 // POST /api/auth/token — Genera un JWT de prueba
@@ -153,7 +198,7 @@ app.MapPost("/api/bookings/secure", async (BookingRequestDto request, IHttpClien
 // -----------------------------------------------------------
 // POST /api/bookings — Orquestador principal (Patrón SAGA)
 // -----------------------------------------------------------
-app.MapPost("/api/bookings", async (BookingRequestDto request, IHttpClientFactory factory) =>
+app.MapPost("/api/bookings", async (BookingRequestDto request, IHttpClientFactory factory, IPublishEndpoint publisher) =>
 {
     var eventClient    = factory.CreateClient("EventClient");
     var discountClient = factory.CreateClient("DiscountClient");
@@ -224,6 +269,14 @@ app.MapPost("/api/bookings", async (BookingRequestDto request, IHttpClientFactor
             throw new Exception("Fondos insuficientes en la tarjeta de crédito.");
 
         // Pago exitoso: retornar factura
+        var bookingId = Guid.NewGuid();
+
+        await publisher.Publish(new BookingConfirmedEvent(
+            bookingId,
+            request.EventId,
+            request.Tickets,
+            total));
+
         return Results.Ok(new BookingInvoiceDto(
             Status:       "Éxito",
             EventName:    eventData.Name,
@@ -252,5 +305,7 @@ app.MapPost("/api/bookings", async (BookingRequestDto request, IHttpClientFactor
     }
 })
 .WithName("CreateBooking");
+
+app.MapGet("/health", () => Results.Ok("OK"));
 
 app.Run();

@@ -42,6 +42,8 @@ app.MapGet("/api/discounts/{code}", (string code) =>
 })
 .WithName("GetDiscount");
 
+app.MapGet("/health", () => Results.Ok("OK"));
+
 app.Run();
 
 // -----------------------------------------------------------

@@ -1,0 +1,29 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: itm-tickets-ingress
+  annotations:
+    kubernetes.io/ingress.class: nginx
+spec:
+  tls:
+  - hosts:
+    - api.itm-tickets.com
+    secretName: itm-tickets-tls-secret
+  rules:
+  - host: api.itm-tickets.com
+    http:
+      paths:
+      - path: /api
+        pathType: Prefix
+        backend:
+          service:
+            name: gateway-api-service
+            port:
+              number: 80
+      - path: /hubs
+        pathType: Prefix
+        backend:
+          service:
+            name: gateway-api-service
+            port:
+              number: 80

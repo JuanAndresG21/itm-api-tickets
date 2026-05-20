@@ -1,10 +1,25 @@
 using Itm.Event.Api.Constants;
 using Itm.Event.Api.Dtos;
+using Microsoft.Extensions.Caching.Distributed;
+using System.Text.Json;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
+
+var redisConnection = builder.Configuration.GetConnectionString("Redis")
+    ?? builder.Configuration["Redis:ConnectionString"];
+if (string.IsNullOrWhiteSpace(redisConnection) || redisConnection == "REDIS_CONNECTION")
+{
+    redisConnection = "localhost:6379";
+}
+
+builder.Services.AddStackExchangeRedisCache(options =>
+{
+    options.Configuration = redisConnection;
+    options.InstanceName = "itm-events:";
+});
 
 var app = builder.Build();
 
@@ -33,13 +48,31 @@ var lockObj = new object();
 // -----------------------------------------------------------
 // GET /api/events/{id} — Consultar información del evento
 // -----------------------------------------------------------
-app.MapGet("/api/events/{id}", (int id) =>
+app.MapGet("/api/events/{id}", async (int id, IDistributedCache cache) =>
 {
+    var cacheKey = $"event:{id}";
+    var cached = await cache.GetStringAsync(cacheKey);
+    if (!string.IsNullOrWhiteSpace(cached))
+    {
+        var cachedDto = JsonSerializer.Deserialize<EventDto>(cached);
+        if (cachedDto is not null)
+            return Results.Ok(cachedDto);
+    }
+
     var ev = events.FirstOrDefault(e => e.Id == id);
     if (ev is null)
         return Results.NotFound($"Evento con Id {id} no encontrado.");
 
-    return Results.Ok(new EventDto(ev.Id, ev.Name, ev.BasePrice, ev.AvailableSeats));
+    var dto = new EventDto(ev.Id, ev.Name, ev.BasePrice, ev.AvailableSeats);
+    await cache.SetStringAsync(
+        cacheKey,
+        JsonSerializer.Serialize(dto),
+        new DistributedCacheEntryOptions
+        {
+            AbsoluteExpirationRelativeToNow = TimeSpan.FromSeconds(30)
+        });
+
+    return Results.Ok(dto);
 })
 .WithName("GetEvent");
 
@@ -47,54 +80,87 @@ app.MapGet("/api/events/{id}", (int id) =>
 // POST /api/events/reserve — Reservar sillas (Paso 1 de SAGA)
 // -----------------------------------------------------------
 // Si no hay sillas suficientes retorna 400 BadRequest.
-app.MapPost("/api/events/reserve", (ReservationDto request) =>
+app.MapPost("/api/events/reserve", async (ReservationDto request, IDistributedCache cache) =>
 {
+    bool notFound = false;
+    string? errorMessage = null;
+    var remainingSeats = 0;
+
     lock (lockObj)
     {
         var ev = events.FirstOrDefault(e => e.Id == request.EventId);
         if (ev is null)
-            return Results.NotFound($"Evento con Id {request.EventId} no encontrado.");
-
-        if (ev.AvailableSeats < request.Quantity)
-            return Results.BadRequest(
-                $"Sillas insuficientes. Solicitadas: {request.Quantity}, Disponibles: {ev.AvailableSeats}.");
-
-        ev.AvailableSeats -= request.Quantity;
-
-        Console.WriteLine($"[RESERVE] Evento {ev.Id}: -{request.Quantity} sillas. Quedan: {ev.AvailableSeats}");
-
-        return Results.Ok(new
         {
-            Message = "Sillas reservadas exitosamente.",
-            RemainingSeats = ev.AvailableSeats
-        });
+            notFound = true;
+            errorMessage = $"Evento con Id {request.EventId} no encontrado.";
+        }
+        else if (ev.AvailableSeats < request.Quantity)
+        {
+            errorMessage = $"Sillas insuficientes. Solicitadas: {request.Quantity}, Disponibles: {ev.AvailableSeats}.";
+        }
+        else
+        {
+            ev.AvailableSeats -= request.Quantity;
+            remainingSeats = ev.AvailableSeats;
+        }
     }
+
+    if (notFound)
+        return Results.NotFound(errorMessage);
+
+    if (errorMessage is not null)
+        return Results.BadRequest(errorMessage);
+
+    await cache.RemoveAsync($"event:{request.EventId}");
+
+    Console.WriteLine($"[RESERVE] Evento {request.EventId}: -{request.Quantity} sillas. Quedan: {remainingSeats}");
+
+    return Results.Ok(new
+    {
+        Message = "Sillas reservadas exitosamente.",
+        RemainingSeats = remainingSeats
+    });
 })
 .WithName("ReserveSeats");
 
 // -----------------------------------------------------------
 // POST /api/events/release — Liberar sillas (Compensación SAGA / Ctrl+Z)
 // -----------------------------------------------------------
-app.MapPost("/api/events/release", (ReservationDto request) =>
+app.MapPost("/api/events/release", async (ReservationDto request, IDistributedCache cache) =>
 {
+    bool notFound = false;
+    var remainingSeats = 0;
+
     lock (lockObj)
     {
         var ev = events.FirstOrDefault(e => e.Id == request.EventId);
         if (ev is null)
-            return Results.NotFound($"Evento con Id {request.EventId} no encontrado.");
-
-        ev.AvailableSeats += request.Quantity;
-
-        Console.WriteLine($"[RELEASE] Evento {ev.Id}: +{request.Quantity} sillas. Quedan: {ev.AvailableSeats}");
-
-        return Results.Ok(new
         {
-            Message = "Sillas liberadas exitosamente.",
-            RemainingSeats = ev.AvailableSeats
-        });
+            notFound = true;
+        }
+        else
+        {
+            ev.AvailableSeats += request.Quantity;
+            remainingSeats = ev.AvailableSeats;
+        }
     }
+
+    if (notFound)
+        return Results.NotFound($"Evento con Id {request.EventId} no encontrado.");
+
+    await cache.RemoveAsync($"event:{request.EventId}");
+
+    Console.WriteLine($"[RELEASE] Evento {request.EventId}: +{request.Quantity} sillas. Quedan: {remainingSeats}");
+
+    return Results.Ok(new
+    {
+        Message = "Sillas liberadas exitosamente.",
+        RemainingSeats = remainingSeats
+    });
 })
 .WithName("ReleaseSeats");
+
+app.MapGet("/health", () => Results.Ok("OK"));
 
 app.Run();
 
